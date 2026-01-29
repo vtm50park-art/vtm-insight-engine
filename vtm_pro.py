@@ -7,6 +7,8 @@ from datetime import datetime, timedelta
 import io
 from openpyxl.styles import Font, PatternFill
 import time
+import json
+import os
 
 # plotly 안전 임포트
 try:
@@ -32,6 +34,72 @@ if 'vtm_df' not in st.session_state:
     st.session_state['vtm_df'] = None
 if 'failed_keys' not in st.session_state:
     st.session_state['failed_keys'] = set()
+if 'access_logs' not in st.session_state:
+    st.session_state['access_logs'] = []
+
+# ==================== 로그 관리 ====================
+LOG_FILE = "vtm_access_logs.json"
+
+def save_log(user, action):
+    """로그 저장"""
+    log_entry = {
+        "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        "user": user,
+        "action": action
+    }
+    
+    # 세션 로그에 추가
+    st.session_state['access_logs'].append(log_entry)
+    
+    # 파일에 저장 (영구 보관)
+    try:
+        if os.path.exists(LOG_FILE):
+            with open(LOG_FILE, 'r', encoding='utf-8') as f:
+                logs = json.load(f)
+        else:
+            logs = []
+        
+        logs.append(log_entry)
+        
+        with open(LOG_FILE, 'w', encoding='utf-8') as f:
+            json.dump(logs, f, ensure_ascii=False, indent=2)
+    except:
+        pass  # 파일 저장 실패해도 계속 진행
+
+def load_logs():
+    """로그 불러오기"""
+    try:
+        if os.path.exists(LOG_FILE):
+            with open(LOG_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        return []
+    except:
+        return []
+
+def create_log_excel(logs):
+    """로그를 엑셀로 변환"""
+    df = pd.DataFrame(logs)
+    
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name="접속기록")
+        worksheet = writer.sheets["접속기록"]
+        
+        # 열 너비 조정
+        worksheet.column_dimensions['A'].width = 20  # timestamp
+        worksheet.column_dimensions['B'].width = 15  # user
+        worksheet.column_dimensions['C'].width = 50  # action
+        
+        # 헤더 스타일
+        header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+        header_font = Font(bold=True, color="FFFFFF")
+        
+        for cell in worksheet[1]:
+            cell.fill = header_fill
+            cell.font = header_font
+    
+    output.seek(0)
+    return output.getvalue()
 
 # ==================== 채널 정보 ====================
 CHANNELS = {
@@ -40,7 +108,7 @@ CHANNELS = {
         "purpose": "힙합 플레이리스트의 제목, 썸네일, 곡 구성을 분석하여 브이티엠만의 힙합 플리 제작. 경쟁 플리의 조회수 패턴과 알고리즘 최적화 전략 벤치마킹.",
         "insight": "떡상 플리는 '장르 믹스 + 무드 키워드(심야, 드라이브, 작업용)' 조합이 핵심. 썸네일은 고대비 색상 + 큰 장르명 필수.",
         "hiphop": {"q": "힙합 플레이리스트 rap playlist", "region": "KR"},
-        "ai": {"q": "AI Generated Music Video Sora Veo Runway", "region": ""}  # 국내외 모두 검색
+        "ai": {"q": "AI Generated Music Video Sora Veo Runway", "region": ""}
     },
     "시니어 스마일": {
         "desc": "실버 세대 맞춤형 트로트 큐레이션",
@@ -159,6 +227,7 @@ def log_vtm(user, action):
     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     print(f"[{now}] [{user}] {action}")
     sys.stdout.flush()
+    save_log(user, action)
 
 def get_youtube_client():
     for attempt in range(len(API_KEYS)):
@@ -208,7 +277,6 @@ def fetch_youtube_native(query, region, order_type, period, content_type, max_re
                 "order": order_type
             }
             
-            # region이 빈 문자열이 아닐 때만 추가 (AI 뮤직비디오는 전세계 검색)
             if region:
                 search_params["regionCode"] = region
             
@@ -305,10 +373,8 @@ def fetch_youtube_native(query, region, order_type, period, content_type, max_re
     
     return None
 
-# ==================== 개별 영상 떡상 분석 ====================
+# ==================== 개별 영상 분석 ====================
 def analyze_video(row, rank, channel_name):
-    """개별 영상 떡상 이유 분석"""
-    
     engagement_rate = (row['좋아요 수'] + row['댓글 수']) / row['조회수'] * 100
     viral_level = "신의 간택" if row['Viral Score'] >= 10000 else "초대박" if row['Viral Score'] >= 1000 else "성공"
     
@@ -364,18 +430,29 @@ if st.session_state['vtm_user'] is None:
             if st.button("🚀 시스템 가동", use_container_width=True, type="primary"):
                 if pw == "5638":
                     st.session_state['vtm_user'] = user_choice
+                    save_log(user_choice, "시스템 접속 (관리자)")
                     st.rerun()
                 else:
                     st.error("❌ 비밀번호 오류")
         elif user_choice != "선택하세요":
             if st.button("🚀 시스템 가동", use_container_width=True, type="primary"):
                 st.session_state['vtm_user'] = user_choice
+                save_log(user_choice, "시스템 접속")
                 st.rerun()
     st.stop()
 
 # ==================== 사이드바 ====================
 with st.sidebar:
     st.markdown(f"### 👤 {st.session_state['vtm_user']}")
+    
+    # 본부장 전용 로그 확인 버튼
+    if st.session_state['vtm_user'] == "박동진 본부장":
+        st.markdown("---")
+        st.markdown("### 🔐 관리자 전용")
+        if st.button("📊 접속 기록 확인", use_container_width=True):
+            st.session_state['show_logs'] = True
+        st.markdown("---")
+    
     st.markdown("---")
     
     selected_vtm = st.selectbox("📌 채널", list(CHANNELS.keys()))
@@ -385,6 +462,7 @@ with st.sidebar:
     
     if st.button("🔥 떡상 분석 가동", use_container_width=True, type="primary"):
         st.session_state['trigger_analysis'] = True
+        save_log(st.session_state['vtm_user'], f"{selected_vtm} 분석 실행")
     
     st.markdown("---")
     
@@ -413,6 +491,56 @@ with st.sidebar:
     
     final_query = f"{q_base} {user_q}".strip()
 
+# ==================== 본부장 전용: 로그 확인 ====================
+if 'show_logs' in st.session_state and st.session_state['show_logs']:
+    st.markdown("# 📊 시스템 접속 기록")
+    st.markdown("---")
+    
+    all_logs = load_logs()
+    
+    if all_logs:
+        # 통계
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("총 접속 횟수", len(all_logs))
+        with col2:
+            unique_users = len(set([log['user'] for log in all_logs]))
+            st.metric("사용자 수", unique_users)
+        with col3:
+            today_logs = [log for log in all_logs if log['timestamp'].startswith(datetime.now().strftime('%Y-%m-%d'))]
+            st.metric("오늘 접속", len(today_logs))
+        
+        st.markdown("---")
+        
+        # 로그 테이블
+        df_logs = pd.DataFrame(all_logs)
+        df_logs = df_logs.sort_values('timestamp', ascending=False)
+        
+        st.dataframe(df_logs, use_container_width=True, hide_index=True)
+        
+        st.markdown("---")
+        
+        # 엑셀 다운로드
+        excel_logs = create_log_excel(all_logs)
+        st.download_button(
+            "📥 접속 기록 엑셀 다운로드",
+            excel_logs,
+            f"VTM_접속기록_{datetime.now().strftime('%Y%m%d')}.xlsx",
+            use_container_width=True,
+            type="primary"
+        )
+        
+        if st.button("← 돌아가기", use_container_width=True):
+            st.session_state['show_logs'] = False
+            st.rerun()
+    else:
+        st.info("아직 접속 기록이 없습니다.")
+        if st.button("← 돌아가기"):
+            st.session_state['show_logs'] = False
+            st.rerun()
+    
+    st.stop()
+
 # ==================== 메인 ====================
 st.markdown(f"<h1 style='text-align: center;'>🚀 {selected_vtm} 벤치마킹</h1>", unsafe_allow_html=True)
 st.markdown("---")
@@ -428,6 +556,7 @@ if 'trigger_analysis' in st.session_state and st.session_state['trigger_analysis
             df = pd.DataFrame(data).sort_values("Viral Score", ascending=False).reset_index(drop=True)
             st.session_state['vtm_df'] = df
             st.success(f"✅ {len(df)}개 발굴")
+            save_log(st.session_state['vtm_user'], f"{selected_vtm} 분석 완료: {len(df)}개 발굴")
         else:
             st.warning("⚠️ 데이터 없음")
 
@@ -448,7 +577,7 @@ if st.session_state['vtm_df'] is not None and len(st.session_state['vtm_df']) > 
         else:
             st.dataframe(df[['채널명', '동영상 제목', 'Viral Score']])
     
-    # 탭 2: TOP 10 분석 (TOP 3는 영상 바로 아래 분석)
+    # 탭 2: TOP 10 분석
     with tabs[1]:
         st.markdown("## 🏆 TOP 10 경쟁 채널")
         
@@ -477,7 +606,6 @@ if st.session_state['vtm_df'] is not None and len(st.session_state['vtm_df']) > 
                     with col_b:
                         st.link_button("📺 채널로 이동", row['채널 주소'], use_container_width=True)
                 
-                # TOP 3만 바로 아래 분석 표시
                 if idx < 3:
                     st.markdown(analyze_video(row, idx + 1, selected_vtm))
                 
@@ -507,13 +635,15 @@ if st.session_state['vtm_df'] is not None and len(st.session_state['vtm_df']) > 
         st.markdown("---")
         
         excel_data = create_vtm_excel(df, "벤치마킹", st.session_state['vtm_user'])
-        st.download_button(
+        
+        if st.download_button(
             "📥 엑셀 다운로드",
             excel_data,
             f"VTM_{selected_vtm}_{datetime.now().strftime('%Y%m%d')}.xlsx",
             use_container_width=True,
             type="primary"
-        )
+        ):
+            save_log(st.session_state['vtm_user'], f"{selected_vtm} 엑셀 다운로드")
     
     # 탭 4: AI 프롬프트
     with tabs[3]:
